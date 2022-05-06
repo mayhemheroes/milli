@@ -1,0 +1,5 @@
+project: milli
+target: parse
+
+cmds:
+  - cmd: /parse
