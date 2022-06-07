@@ -12,7 +12,7 @@ env:
   PARSE: parse.mayhemfile
   DEPTH: depth.mayhemfile
   FLATTEN: flatten.mayhemfile
-  INDEXING: INDEXING.mayhemfile
+  INDEXING: indexing.mayhemfile
 
 jobs:
   build:
