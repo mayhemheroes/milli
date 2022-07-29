@@ -10,7 +10,8 @@ use libfuzzer_sys::fuzz_target;
 use milli::documents::{DocumentsBatchBuilder, DocumentsBatchReader};
 use milli::update::{IndexDocuments, IndexDocumentsConfig, IndexerConfig, Settings};
 use milli::Index;
-use serde_json::{Map, Value};
+use milli::Object;
+use serde_json::{Value};
 
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -30,7 +31,7 @@ pub fn read_json(input: impl Read, writer: impl Write + Seek) -> Result<usize> {
     }
 
     let count = builder.documents_count();
-    let vector = builder.into_inner()?;
+    let _vector = builder.into_inner()?;
 
     Ok(count as usize)
 }
@@ -43,9 +44,9 @@ fn index_documents(
     let mut wtxn = index.write_txn()?;
 
     let indexing_config = IndexDocumentsConfig::default();
-    let mut builder = IndexDocuments::new(&mut wtxn, &index, &config, indexing_config, |_| ())?;
-    builder.add_documents(documents)?;
-    builder.execute().unwrap();
+    let builder = IndexDocuments::new(&mut wtxn, &index, &config, indexing_config, |_| ())?;
+    let (_, res) = builder.add_documents(documents)?;
+    //res.execute().unwrap();
 
     wtxn.commit()?;
     Ok(())
