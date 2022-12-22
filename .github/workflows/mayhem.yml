@@ -12,7 +12,6 @@ env:
   PARSE: parse.mayhemfile
   DEPTH: depth.mayhemfile
   FLATTEN: flatten.mayhemfile
-  INDEXING: indexing.mayhemfile
 
 jobs:
   build:
@@ -63,13 +62,6 @@ jobs:
         with:
           mayhem-token: ${{ secrets.MAYHEM_TOKEN }}
           args: --image ${{ steps.meta.outputs.tags }} --file ${{ env.FLATTEN }} --duration 300
-          sarif-output: sarif
-
-      - name: Start INDEXING analysis
-        uses: ForAllSecure/mcode-action@v1
-        with:
-          mayhem-token: ${{ secrets.MAYHEM_TOKEN }}
-          args: --image ${{ steps.meta.outputs.tags }} --file ${{ env.INDEXING }} --duration 300
           sarif-output: sarif
 
       - name: Start DEPTH analysis
