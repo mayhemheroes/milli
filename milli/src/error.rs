@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::convert::Infallible;
+use std::fmt::Write;
 use std::{io, str};
 
 use heed::{Error as HeedError, MdbError};
@@ -100,10 +101,11 @@ A document identifier can be of type integer or string, \
 only composed of alphanumeric characters (a-z A-Z 0-9), hyphens (-) and underscores (_).", .document_id.to_string()
     )]
     InvalidDocumentId { document_id: Value },
-    #[error("Invalid facet distribution, the fields `{}` are not set as filterable.",
-        .invalid_facets_name.iter().map(AsRef::as_ref).collect::<Vec<&str>>().join(", ")
-     )]
-    InvalidFacetsDistribution { invalid_facets_name: BTreeSet<String> },
+    #[error("Invalid facet distribution, {}", format_invalid_filter_distribution(.invalid_facets_name, .valid_facets_name))]
+    InvalidFacetsDistribution {
+        invalid_facets_name: BTreeSet<String>,
+        valid_facets_name: BTreeSet<String>,
+    },
     #[error(transparent)]
     InvalidGeoField(#[from] GeoError),
     #[error("{0}")]
@@ -130,8 +132,10 @@ only composed of alphanumeric characters (a-z A-Z 0-9), hyphens (-) and undersco
     MissingDocumentId { primary_key: String, document: Object },
     #[error("Document have too many matching `{}` attribute: `{}`.", .primary_key, serde_json::to_string(.document).unwrap())]
     TooManyDocumentIds { primary_key: String, document: Object },
-    #[error("The primary key inference process failed because the engine did not find any fields containing `id` substring in their name. If your document identifier does not contain any `id` substring, you can set the primary key of the index.")]
-    MissingPrimaryKey,
+    #[error("The primary key inference failed as the engine did not find any field ending with `id` in its name. Please specify the primary key manually using the `primaryKey` query parameter.")]
+    NoPrimaryKeyCandidateFound,
+    #[error("The primary key inference failed as the engine found {} fields ending with `id` in their names: '{}' and '{}'. Please specify the primary key manually using the `primaryKey` query parameter.", .candidates.len(), .candidates.get(0).unwrap(), .candidates.get(1).unwrap())]
+    MultiplePrimaryKeyCandidatesFound { candidates: Vec<String> },
     #[error("There is no more space left on the device. Consider increasing the size of the disk/partition.")]
     NoSpaceLeftOnDevice,
     #[error("Index already has a primary key: `{0}`.")]
@@ -150,6 +154,8 @@ only composed of alphanumeric characters (a-z A-Z 0-9), hyphens (-) and undersco
 pub enum GeoError {
     #[error("The `_geo` field in the document with the id: `{document_id}` is not an object. Was expecting an object with the `_geo.lat` and `_geo.lng` fields but instead got `{value}`.")]
     NotAnObject { document_id: Value, value: Value },
+    #[error("The `_geo` field in the document with the id: `{document_id}` contains the following unexpected fields: `{value}`.")]
+    UnexpectedExtraFields { document_id: Value, value: Value },
     #[error("Could not find latitude nor longitude in the document with the id: `{document_id}`. Was expecting `_geo.lat` and `_geo.lng` fields.")]
     MissingLatitudeAndLongitude { document_id: Value },
     #[error("Could not find latitude in the document with the id: `{document_id}`. Was expecting a `_geo.lat` field.")]
@@ -162,6 +168,50 @@ pub enum GeoError {
     BadLatitude { document_id: Value, value: Value },
     #[error("Could not parse longitude in the document with the id: `{document_id}`. Was expecting a finite number but instead got `{value}`.")]
     BadLongitude { document_id: Value, value: Value },
+}
+
+fn format_invalid_filter_distribution(
+    invalid_facets_name: &BTreeSet<String>,
+    valid_facets_name: &BTreeSet<String>,
+) -> String {
+    if valid_facets_name.is_empty() {
+        return "this index does not have configured filterable attributes.".into();
+    }
+
+    let mut result = String::new();
+
+    match invalid_facets_name.len() {
+        0 => (),
+        1 => write!(
+            result,
+            "attribute `{}` is not filterable.",
+            invalid_facets_name.first().unwrap()
+        )
+        .unwrap(),
+        _ => write!(
+            result,
+            "attributes `{}` are not filterable.",
+            invalid_facets_name.iter().map(AsRef::as_ref).collect::<Vec<&str>>().join(", ")
+        )
+        .unwrap(),
+    };
+
+    match valid_facets_name.len() {
+        1 => write!(
+            result,
+            " The available filterable attribute is `{}`.",
+            valid_facets_name.first().unwrap()
+        )
+        .unwrap(),
+        _ => write!(
+            result,
+            " The available filterable attributes are `{}`.",
+            valid_facets_name.iter().map(AsRef::as_ref).collect::<Vec<&str>>().join(", ")
+        )
+        .unwrap(),
+    }
+
+    result
 }
 
 /// A little macro helper to autogenerate From implementation that needs two `Into`.

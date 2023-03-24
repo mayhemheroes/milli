@@ -966,34 +966,6 @@ mod tests {
     }
 
     #[test]
-    fn index_all_flavour_of_geo() {
-        let mut index = TempIndex::new();
-        index.index_documents_config.update_method = IndexDocumentsMethod::ReplaceDocuments;
-
-        index
-            .update_settings(|settings| {
-                settings.set_filterable_fields(hashset!(S("_geo")));
-            })
-            .unwrap();
-
-        index
-            .add_documents(documents!([
-              { "id": 0, "_geo": { "lat": 31, "lng": [42] } },
-              { "id": 1, "_geo": { "lat": "31" }, "_geo.lng": 42 },
-              { "id": 2, "_geo": { "lng": "42" }, "_geo.lat": "31" },
-              { "id": 3, "_geo.lat": 31, "_geo.lng": "42" },
-            ]))
-            .unwrap();
-
-        let rtxn = index.read_txn().unwrap();
-
-        let mut search = crate::Search::new(&rtxn, &index);
-        search.filter(crate::Filter::from_str("_geoRadius(31, 42, 0.000001)").unwrap().unwrap());
-        let crate::SearchResult { documents_ids, .. } = search.execute().unwrap();
-        assert_eq!(documents_ids, vec![0, 1, 2, 3]);
-    }
-
-    #[test]
     fn geo_error() {
         let mut index = TempIndex::new();
         index.index_documents_config.update_method = IndexDocumentsMethod::ReplaceDocuments;
@@ -1575,11 +1547,11 @@ mod tests {
         let rtxn = index.read_txn().unwrap();
 
         // Only the first document should match.
-        let count = index.word_docids.get(&rtxn, "化妆包").unwrap().unwrap().len();
+        let count = index.word_docids.get(&rtxn, "huàzhuāngbāo").unwrap().unwrap().len();
         assert_eq!(count, 1);
 
         // Only the second document should match.
-        let count = index.word_docids.get(&rtxn, "包").unwrap().unwrap().len();
+        let count = index.word_docids.get(&rtxn, "bāo").unwrap().unwrap().len();
         assert_eq!(count, 1);
 
         let mut search = crate::Search::new(&rtxn, &index);
@@ -1657,6 +1629,12 @@ mod tests {
             "project_id": 78207,
             "branch_id_number": 0
         }]};
+
+        {
+            let mut wtxn = index.write_txn().unwrap();
+            index.put_primary_key(&mut wtxn, "id").unwrap();
+            wtxn.commit().unwrap();
+        }
 
         index.add_documents(doc1).unwrap();
         index.add_documents(doc2).unwrap();
@@ -1812,6 +1790,56 @@ mod tests {
         index.add_documents(doc2).unwrap_err();
         index.add_documents(doc3).unwrap_err();
         index.add_documents(doc4).unwrap_err();
+    }
+
+    #[test]
+    fn primary_key_inference() {
+        let index = TempIndex::new();
+
+        let doc_no_id = documents! {[{
+            "title": "asdsad",
+            "state": "automated",
+            "priority": "normal",
+            "branch_id_number": 0
+        }]};
+        assert!(matches!(
+            index.add_documents(doc_no_id),
+            Err(Error::UserError(UserError::NoPrimaryKeyCandidateFound))
+        ));
+
+        let doc_multiple_ids = documents! {[{
+            "id": 228143,
+            "title": "something",
+            "state": "automated",
+            "priority": "normal",
+            "public_uid": "39c6499b",
+            "project_id": 78207,
+            "branch_id_number": 0
+        }]};
+
+        let Err(Error::UserError(UserError::MultiplePrimaryKeyCandidatesFound {
+            candidates
+        })) =
+            index.add_documents(doc_multiple_ids) else { panic!("Expected Error::UserError(MultiplePrimaryKeyCandidatesFound)") };
+
+        assert_eq!(candidates, vec![S("id"), S("project_id"), S("public_uid"),]);
+
+        let doc_inferable = documents! {[{
+            "video": "test.mp4",
+            "id": 228143,
+            "title": "something",
+            "state": "automated",
+            "priority": "normal",
+            "public_uid_": "39c6499b",
+            "project_id_": 78207,
+            "branch_id_number": 0
+        }]};
+
+        index.add_documents(doc_inferable).unwrap();
+
+        let txn = index.read_txn().unwrap();
+
+        assert_eq!(index.primary_key(&txn).unwrap().unwrap(), "id");
     }
 
     #[test]

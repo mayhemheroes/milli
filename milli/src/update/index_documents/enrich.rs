@@ -21,6 +21,10 @@ const DEFAULT_PRIMARY_KEY: &str = "id";
 ///  - all the documents id exist and are extracted,
 ///  - the validity of them but also,
 ///  - the validity of the `_geo` field depending on the settings.
+///
+/// # Panics
+///
+/// - if reader.is_empty(), this function may panic in some cases
 pub fn enrich_documents_batch<R: Read + Seek>(
     rtxn: &heed::RoTxn,
     index: &Index,
@@ -49,22 +53,44 @@ pub fn enrich_documents_batch<R: Read + Seek>(
                         primary_key: primary_key.to_string(),
                         document: obkv_to_object(&first_document, &documents_batch_index)?,
                     })),
-                    None => Ok(Err(UserError::MissingPrimaryKey)),
+                    None => unreachable!("Called with reader.is_empty()"),
                 };
             }
         },
         None => {
-            let guessed = documents_batch_index
+            let mut guesses: Vec<(u16, &str)> = documents_batch_index
                 .iter()
-                .filter(|(_, name)| name.to_lowercase().contains(DEFAULT_PRIMARY_KEY))
-                .min_by_key(|(fid, _)| *fid);
-            match guessed {
-                Some((id, name)) => PrimaryKey::flat(name.as_str(), *id),
-                None if autogenerate_docids => PrimaryKey::flat(
+                .filter(|(_, name)| name.to_lowercase().ends_with(DEFAULT_PRIMARY_KEY))
+                .map(|(field_id, name)| (*field_id, name.as_str()))
+                .collect();
+
+            // sort the keys in a deterministic, obvious way, so that fields are always in the same order.
+            guesses.sort_by(|(_, left_name), (_, right_name)| {
+                // shortest name first
+                left_name.len().cmp(&right_name.len()).then_with(
+                    // then alphabetical order
+                    || left_name.cmp(right_name),
+                )
+            });
+
+            match guesses.as_slice() {
+                [] if autogenerate_docids => PrimaryKey::flat(
                     DEFAULT_PRIMARY_KEY,
                     documents_batch_index.insert(DEFAULT_PRIMARY_KEY),
                 ),
-                None => return Ok(Err(UserError::MissingPrimaryKey)),
+                [] => return Ok(Err(UserError::NoPrimaryKeyCandidateFound)),
+                [(field_id, name)] => {
+                    log::info!("Primary key was not specified in index. Inferred to '{name}'");
+                    PrimaryKey::flat(name, *field_id)
+                }
+                multiple => {
+                    return Ok(Err(UserError::MultiplePrimaryKeyCandidatesFound {
+                        candidates: multiple
+                            .iter()
+                            .map(|(_, candidate)| candidate.to_string())
+                            .collect(),
+                    }));
+                }
             }
         }
     };
@@ -72,7 +98,12 @@ pub fn enrich_documents_batch<R: Read + Seek>(
     // If the settings specifies that a _geo field must be used therefore we must check the
     // validity of it in all the documents of this batch and this is when we return `Some`.
     let geo_field_id = match documents_batch_index.id("_geo") {
-        Some(geo_field_id) if index.sortable_fields(rtxn)?.contains("_geo") => Some(geo_field_id),
+        Some(geo_field_id)
+            if index.sortable_fields(rtxn)?.contains("_geo")
+                || index.filterable_fields(rtxn)?.contains("_geo") =>
+        {
+            Some(geo_field_id)
+        }
         _otherwise => None,
     };
 
@@ -341,11 +372,17 @@ pub fn extract_finite_float_from_value(value: Value) -> StdResult<f64, Value> {
 
 pub fn validate_geo_from_json(id: &DocumentId, bytes: &[u8]) -> Result<StdResult<(), GeoError>> {
     use GeoError::*;
-    let debug_id = || Value::from(id.debug());
+    let debug_id = || {
+        serde_json::from_slice(id.value().as_bytes()).unwrap_or_else(|_| Value::from(id.debug()))
+    };
     match serde_json::from_slice(bytes).map_err(InternalError::SerdeJson)? {
         Value::Object(mut object) => match (object.remove("lat"), object.remove("lng")) {
             (Some(lat), Some(lng)) => {
                 match (extract_finite_float_from_value(lat), extract_finite_float_from_value(lng)) {
+                    (Ok(_), Ok(_)) if !object.is_empty() => Ok(Err(UnexpectedExtraFields {
+                        document_id: debug_id(),
+                        value: object.into(),
+                    })),
                     (Ok(_), Ok(_)) => Ok(Ok(())),
                     (Err(value), Ok(_)) => Ok(Err(BadLatitude { document_id: debug_id(), value })),
                     (Ok(_), Err(value)) => Ok(Err(BadLongitude { document_id: debug_id(), value })),

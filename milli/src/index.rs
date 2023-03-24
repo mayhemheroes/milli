@@ -255,6 +255,16 @@ impl Index {
         Ok(self.env.real_disk_size()?)
     }
 
+    /// Returns the map size the underlying environment was opened with, in bytes.
+    ///
+    /// This value does not represent the current on-disk size of the index.
+    ///
+    /// This value is the maximum between the map size passed during the opening of the index
+    /// and the on-disk size of the index at the time of opening.
+    pub fn map_size(&self) -> Result<usize> {
+        Ok(self.env.map_size()?)
+    }
+
     pub fn copy_to_path<P: AsRef<Path>>(&self, path: P, option: CompactionOption) -> Result<File> {
         self.env.copy_to_path(path, option).map_err(Into::into)
     }
@@ -338,10 +348,10 @@ impl Index {
     /* external documents ids */
 
     /// Writes the external documents ids and internal ids (i.e. `u32`).
-    pub(crate) fn put_external_documents_ids<'a>(
+    pub(crate) fn put_external_documents_ids(
         &self,
         wtxn: &mut RwTxn,
-        external_documents_ids: &ExternalDocumentsIds<'a>,
+        external_documents_ids: &ExternalDocumentsIds<'_>,
     ) -> heed::Result<()> {
         let ExternalDocumentsIds { hard, soft, .. } = external_documents_ids;
         let hard = hard.as_fst().as_bytes();
@@ -416,7 +426,7 @@ impl Index {
     }
 
     /// Returns the `rtree` which associates coordinates to documents ids.
-    pub fn geo_rtree<'t>(&self, rtxn: &'t RoTxn) -> Result<Option<RTree<GeoPoint>>> {
+    pub fn geo_rtree(&self, rtxn: &RoTxn) -> Result<Option<RTree<GeoPoint>>> {
         match self
             .main
             .get::<_, Str, SerdeBincode<RTree<GeoPoint>>>(rtxn, main_key::GEO_RTREE_KEY)?
@@ -2281,5 +2291,70 @@ pub(crate) mod tests {
             let id = obkv.get(primary_key_id).unwrap();
             assert!(all_ids.insert(id));
         }
+    }
+
+    #[test]
+    fn bug_3007() {
+        // https://github.com/meilisearch/meilisearch/issues/3007
+
+        use crate::error::{GeoError, UserError};
+        let index = TempIndex::new();
+
+        // Given is an index with a geo field NOT contained in the sortable_fields of the settings
+        index
+            .update_settings(|settings| {
+                settings.set_primary_key("id".to_string());
+                settings.set_filterable_fields(HashSet::from(["_geo".to_string()]));
+            })
+            .unwrap();
+
+        // happy path
+        index.add_documents(documents!({ "id" : 5, "_geo": {"lat": 12.0, "lng": 11.0}})).unwrap();
+
+        db_snap!(index, geo_faceted_documents_ids);
+
+        // both are unparseable, we expect GeoError::BadLatitudeAndLongitude
+        let err1 = index
+            .add_documents(
+                documents!({ "id" : 6, "_geo": {"lat": "unparseable", "lng": "unparseable"}}),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err1,
+            Error::UserError(UserError::InvalidGeoField(GeoError::BadLatitudeAndLongitude { .. }))
+        ));
+
+        db_snap!(index, geo_faceted_documents_ids); // ensure that no more document was inserted
+    }
+
+    #[test]
+    fn unexpected_extra_fields_in_geo_field() {
+        let index = TempIndex::new();
+
+        index
+            .update_settings(|settings| {
+                settings.set_primary_key("id".to_string());
+                settings.set_filterable_fields(HashSet::from(["_geo".to_string()]));
+            })
+            .unwrap();
+
+        let err = index
+            .add_documents(
+                documents!({ "id" : "doggo", "_geo": { "lat": 1, "lng": 2, "doggo": "are the best" }}),
+            )
+            .unwrap_err();
+        insta::assert_display_snapshot!(err, @r###"The `_geo` field in the document with the id: `"\"doggo\""` contains the following unexpected fields: `{"doggo":"are the best"}`."###);
+
+        db_snap!(index, geo_faceted_documents_ids); // ensure that no documents were inserted
+
+        // multiple fields and complex values
+        let err = index
+            .add_documents(
+                documents!({ "id" : "doggo", "_geo": { "lat": 1, "lng": 2, "doggo": "are the best", "and": { "all": ["cats", { "are": "beautiful" } ] } } }),
+            )
+            .unwrap_err();
+        insta::assert_display_snapshot!(err, @r###"The `_geo` field in the document with the id: `"\"doggo\""` contains the following unexpected fields: `{"and":{"all":["cats",{"are":"beautiful"}]},"doggo":"are the best"}`."###);
+
+        db_snap!(index, geo_faceted_documents_ids); // ensure that no documents were inserted
     }
 }
