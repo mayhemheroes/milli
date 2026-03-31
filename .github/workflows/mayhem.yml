@@ -52,30 +52,20 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
 
     - name: Start PARSE analysis
-      uses: ForAllSecure/mcode-action@long-runs
+      uses: forallsecure/mcode-action@long-runs
       with:
         mayhem-token: ${{ secrets.MAYHEM_TOKEN }}
         args: --image ${{ steps.meta.outputs.tags }} --file ${{ env.PARSE }} 
           --duration 300
-        sarif-output: sarif
-
     - name: Start FLATTEN analysis
-      uses: ForAllSecure/mcode-action@long-runs
+      uses: forallsecure/mcode-action@long-runs
       with:
         mayhem-token: ${{ secrets.MAYHEM_TOKEN }}
         args: --image ${{ steps.meta.outputs.tags }} --file ${{ env.FLATTEN }} 
           --duration 300
-        sarif-output: sarif
-
     - name: Start DEPTH analysis
-      uses: ForAllSecure/mcode-action@long-runs
+      uses: forallsecure/mcode-action@long-runs
       with:
         mayhem-token: ${{ secrets.MAYHEM_TOKEN }}
         args: --image ${{ steps.meta.outputs.tags }} --file ${{ env.DEPTH }} 
           --duration 300
-        sarif-output: sarif
-
-    - name: Upload SARIF file(s)
-      uses: github/codeql-action/upload-sarif@v2
-      with:
-        sarif_file: sarif
